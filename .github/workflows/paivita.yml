@@ -1,0 +1,33 @@
+yaml
+name: Päivitä sivu
+on:
+  schedule:
+    - cron: "15 5 * * *"
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nhl_kansallisuudet.json
+          key: nhl-${{ github.run_id }}
+          restore-keys: nhl-
+      - run: mkdir -p site && python3 paivan_sivu.py site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
