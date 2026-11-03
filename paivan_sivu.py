@@ -202,18 +202,20 @@ def saa_html(tunnit):
 def hae_sahko(nyt):
     data = hae("https://api.porssisahko.net/v2/latest-prices.json")
     paiva = nyt.date()
-    tunnit = {}
+    paivat = {nyt.date(): {}, nyt.date() + timedelta(days=1): {}}
     for p in data.get("prices", []):
         alku = datetime.fromisoformat(p["startDate"].replace("Z", "+00:00")).astimezone(HKI)
-        if alku.date() == paiva:
-            tunnit.setdefault(alku.hour, []).append(float(p["price"]))
-    if len(tunnit) < 20:
-        raise RuntimeError("Tämän päivän sähkönhintoja ei löytynyt")
+        if alku.date() in paivat:
+            paivat[alku.date()].setdefault(alku.hour, []).append(float(p["price"]))
     # Kesäaikasiirtymän päivä voi olla 23 tai 25 tuntia; näytetään olemassa olevat tunnit.
-    return [(h, sum(v) / len(v)) for h, v in sorted(tunnit.items())]
+    tunnit = [[(h, sum(v) / len(v)) for h, v in sorted(t.items())] for t in paivat.values()]
+    tanaan, huomenna = tunnit
+    if len(tanaan) < 20:
+        raise RuntimeError("Tämän päivän sähkönhintoja ei löytynyt")
+    return tanaan, (huomenna if len(huomenna) >= 20 else None)
 
 
-def sahko_html(hinnat):
+def sahko_html(hinnat, huomenna, nyt):
     arvot = [v for _, v in hinnat]
     ka = sum(arvot) / len(arvot)
     hmin = min(hinnat, key=lambda x: x[1])
@@ -229,8 +231,12 @@ def sahko_html(hinnat):
     if halvat_paiva:
         lause.append(f"Päiväsaikaan halvinta (alle 5 c) on klo {jaksot(halvat_paiva)}.")
 
-    data_js = json.dumps([[h, round(v, 2)] for h, v in hinnat])
+    data = {"t": [[h, round(v, 2)] for h, v in hinnat]}
+    if huomenna:
+        data["h"] = [[h, round(v, 2)] for h, v in huomenna]
+    huomenna_osa = huomenna_html(huomenna, ka, nyt + timedelta(days=1))
     return f"""
+    <h3>Tänään</h3>
     <p class="lead">{' '.join(lause)}</p>
     <div class="stats">
       <div class="stat"><span class="k">Keskihinta</span><span class="v">{luku(ka, 2)}</span><span class="s">c/kWh</span></div>
@@ -238,13 +244,40 @@ def sahko_html(hinnat):
       <div class="stat"><span class="k">Kallein</span><span class="v" style="color:{vari(hmax[1])}">{luku(hmax[1], 2)}</span><span class="s">klo {hmax[0]}–{hmax[0] + 1}</span></div>
       <div class="stat"><span class="k">Nyt</span><span class="v" id="nowV">–</span><span class="s" id="nowS">&nbsp;</span></div>
     </div>
-    <div class="chart-wrap"><svg id="chart" viewBox="0 0 720 240" width="100%" role="img" aria-label="Pörssisähkön tuntihinnat"></svg></div>
+    <div class="chart-wrap"><svg id="chart" viewBox="0 0 720 240" width="100%" role="img" aria-label="Pörssisähkön tuntihinnat tänään"></svg></div>
+    {huomenna_osa}
     <div class="legend">
       <span><i style="background:var(--cheap)"></i>alle 5 c</span>
       <span><i style="background:var(--mid)"></i>5–15 c</span>
       <span><i style="background:var(--high)"></i>yli 15 c</span>
     </div>
-    <script>window.SAHKO={data_js};</script>"""
+    <script>window.SAHKO={json.dumps(data)};</script>"""
+
+
+def huomenna_html(hinnat, ka_tanaan, paiva):
+    otsikko = f"<h3>Huomenna {FIN_VIIKONPAIVAT[paiva.weekday()].lower()} {paiva.day}.{paiva.month}.</h3>"
+    if not hinnat:
+        return otsikko + '<p class="lead">Huomisen hinnat julkaistaan noin klo 14. Sivu päivittyy iltapäivällä.</p>'
+    arvot = [v for _, v in hinnat]
+    ka = sum(arvot) / len(arvot)
+    hmin = min(hinnat, key=lambda x: x[1])
+    hmax = max(hinnat, key=lambda x: x[1])
+    ero = ka - ka_tanaan
+    if abs(ero) < 0.5:
+        vertailu = "suunnilleen saman verran kuin tänään"
+    else:
+        vertailu = f"{luku(abs(ero), 2)} senttiä {'enemmän' if ero > 0 else 'vähemmän'} kuin tänään"
+    kalliit = [h for h, v in hinnat if v >= 15]
+    lause = [f"Huomenna sähkö maksaa keskimäärin {luku(ka, 2)} c/kWh, {vertailu}."]
+    lause.append(f"Kallista (yli 15 c) on klo {jaksot(kalliit)}." if kalliit else "Yksikään tunti ei nouse yli 15 sentin.")
+    return f"""{otsikko}
+    <p class="lead">{' '.join(lause)}</p>
+    <div class="stats">
+      <div class="stat"><span class="k">Keskihinta</span><span class="v">{luku(ka, 2)}</span><span class="s">c/kWh</span></div>
+      <div class="stat"><span class="k">Halvin</span><span class="v" style="color:{vari(hmin[1])}">{luku(hmin[1], 2)}</span><span class="s">klo {hmin[0]}–{hmin[0] + 1}</span></div>
+      <div class="stat"><span class="k">Kallein</span><span class="v" style="color:{vari(hmax[1])}">{luku(hmax[1], 2)}</span><span class="s">klo {hmax[0]}–{hmax[0] + 1}</span></div>
+    </div>
+    <div class="chart-wrap"><svg id="chart2" viewBox="0 0 720 240" width="100%" role="img" aria-label="Pörssisähkön tuntihinnat huomenna"></svg></div>"""
 
 
 def vari(v):
@@ -399,7 +432,8 @@ def main():
     except Exception as e:
         saa = virhe_html("Sääennustetta ei saatu haettua.", e)
     try:
-        sahko = sahko_html(hae_sahko(nyt))
+        tanaan, huomenna = hae_sahko(nyt)
+        sahko = sahko_html(tanaan, huomenna, nyt)
     except Exception as e:
         sahko = virhe_html("Sähkön hintoja ei saatu haettua.", e)
     try:
@@ -452,6 +486,7 @@ header{{display:grid;gap:4px}}
 .date{{font:600 .8rem var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}}
 h1{{font:800 clamp(1.8rem,5vw,2.6rem)/1.1 var(--display);margin:0;text-wrap:balance}}
 h2{{font:600 1.35rem/1.2 var(--display);margin:0;text-wrap:balance}}
+h3{{font:600 1.05rem/1.2 var(--display);margin:8px 0 -6px;color:var(--accent)}}
 section{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;display:grid;gap:16px;min-width:0}}
 .head{{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:6px 16px}}
 .src{{font-size:.82rem;color:var(--muted)}}
@@ -498,7 +533,7 @@ svg text{{fill:var(--muted);font:11px var(--mono)}}
   </section>
 
   <section aria-labelledby="sahko">
-    <div class="head"><h2 id="sahko">Pörssisähkö tänään</h2><span class="src">Tuntikeskiarvot, c/kWh, sis. alv</span></div>
+    <div class="head"><h2 id="sahko">Pörssisähkö</h2><span class="src">Tuntikeskiarvot, c/kWh, sis. alv</span></div>
     {sahko}
   </section>
 
@@ -513,32 +548,39 @@ svg text{{fill:var(--muted);font:11px var(--mono)}}
 </main>
 <script>
 (function(){{
-  var p = window.SAHKO; if(!p) return;
-  var svg = document.getElementById("chart"); if(!svg) return;
+  var S = window.SAHKO; if(!S) return;
   var col = function(v){{return v<5?"var(--cheap)":v<15?"var(--mid)":"var(--high)";}};
-  var vals = p.map(function(x){{return x[1];}});
-  var top = Math.max(10, Math.ceil(Math.max.apply(null, vals)/10)*10);
-  var bot = Math.min(0, Math.floor(Math.min.apply(null, vals)));
-  var W=720,H=240,L=36,R=8,T=16,B=28,bw=(W-L-R)/p.length;
+  var fmt = function(v){{return v.toFixed(2).replace(".",",").replace("-","−");}};
+  // Sama asteikko molemmille päiville, jotta kaaviot ovat vertailukelpoisia.
+  var all = S.t.concat(S.h||[]).map(function(x){{return x[1];}});
+  var top = Math.max(10, Math.ceil(Math.max.apply(null, all)/10)*10);
+  var bot = Math.min(0, Math.floor(Math.min.apply(null, all)));
+  var W=720,H=240,L=36,R=8,T=16,B=28;
   var y=function(v){{return T+(H-T-B)*(top-v)/(top-bot);}};
-  var step = top<=20?5:top<=60?10:top<=150?25:50, s="";
-  for(var g=0; g<=top; g+=step) s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(g)+'" y2="'+y(g)+'" stroke="var(--line)"/><text x="'+(L-6)+'" y="'+(y(g)+4)+'" text-anchor="end">'+g+'</text>';
+  var step = top<=20?5:top<=60?10:top<=150?25:50;
+  function draw(id, p, nowH){{
+    var svg=document.getElementById(id); if(!svg||!p) return -1;
+    var bw=(W-L-R)/p.length, s="", nowI=-1;
+    var vals=p.map(function(x){{return x[1];}}), imax=vals.indexOf(Math.max.apply(null,vals));
+    for(var g=0; g<=top; g+=step) s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(g)+'" y2="'+y(g)+'" stroke="var(--line)"/><text x="'+(L-6)+'" y="'+(y(g)+4)+'" text-anchor="end">'+g+'</text>';
+    p.forEach(function(x,i){{
+      var h=x[0], v=x[1], X=L+i*bw+2, y0=y(0), yv=y(v);
+      s+='<rect x="'+X+'" y="'+Math.min(y0,yv)+'" width="'+(bw-4)+'" height="'+Math.max(Math.abs(y0-yv),1)+'" rx="2" fill="'+col(v)+'"><title>klo '+h+'–'+(h+1)+': '+fmt(v)+' c/kWh</title></rect>';
+      if(h%3===0) s+='<text x="'+(X+(bw-4)/2)+'" y="'+(H-10)+'" text-anchor="middle">'+String(h).padStart(2,"0")+'</text>';
+      if(h===nowH){{ nowI=i; s+='<rect x="'+(X-2)+'" y="'+T+'" width="'+bw+'" height="'+(y(bot)-T)+'" fill="none" stroke="var(--accent)" stroke-width="2" rx="3"/>'; }}
+    }});
+    s+='<text x="'+(L+imax*bw+bw/2)+'" y="'+(y(vals[imax])-4)+'" text-anchor="middle" style="fill:var(--fg);font-weight:700">'+fmt(vals[imax]).replace(/,(\\d)\\d$/,",$1")+'</text>';
+    svg.innerHTML=s;
+    return nowI;
+  }}
   var nowH=-1;
   try{{var d=new Date(new Date().toLocaleString("en-US",{{timeZone:"Europe/Helsinki"}}));
      var iso=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
      if(iso==="{iso}") nowH=d.getHours();}}catch(e){{}}
-  var fmt=function(v){{return v.toFixed(2).replace(".",",").replace("-","−");}};
-  var imax=vals.indexOf(Math.max.apply(null,vals)), nowI=-1;
-  p.forEach(function(x,i){{
-    var h=x[0], v=x[1], X=L+i*bw+2, y0=y(0), yv=y(v);
-    s+='<rect x="'+X+'" y="'+Math.min(y0,yv)+'" width="'+(bw-4)+'" height="'+Math.max(Math.abs(y0-yv),1)+'" rx="2" fill="'+col(v)+'"><title>klo '+h+'–'+(h+1)+': '+fmt(v)+' c/kWh</title></rect>';
-    if(h%3===0) s+='<text x="'+(X+(bw-4)/2)+'" y="'+(H-10)+'" text-anchor="middle">'+String(h).padStart(2,"0")+'</text>';
-    if(h===nowH){{ nowI=i; s+='<rect x="'+(X-2)+'" y="'+T+'" width="'+bw+'" height="'+(y(bot)-T)+'" fill="none" stroke="var(--accent)" stroke-width="2" rx="3"/>'; }}
-  }});
-  s+='<text x="'+(L+imax*bw+bw/2)+'" y="'+(y(vals[imax])-4)+'" text-anchor="middle" style="fill:var(--fg);font-weight:700">'+fmt(vals[imax]).replace(/,(\\d)\\d$/,",$1")+'</text>';
-  svg.innerHTML=s;
+  var nowI=draw("chart", S.t, nowH);
+  draw("chart2", S.h, -1);
   var nv=document.getElementById("nowV"), ns=document.getElementById("nowS");
-  if(nowI>=0){{ nv.textContent=fmt(vals[nowI]); nv.style.color=col(vals[nowI]); ns.textContent="c/kWh, klo "+nowH+"–"+(nowH+1); }}
+  if(nowI>=0){{ var v=S.t[nowI][1]; nv.textContent=fmt(v); nv.style.color=col(v); ns.textContent="c/kWh, klo "+nowH+"–"+(nowH+1); }}
   else {{ nv.textContent="–"; ns.textContent="sivu on eri päivältä"; }}
 }})();
 </script>
